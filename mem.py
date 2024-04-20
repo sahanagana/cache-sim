@@ -8,8 +8,7 @@ class Memory:
         self.dynamic_power = dynamic_power
         self.penalty = penalty * 10 ** -12
         self.stats = {
-            'miss_count': 0,
-            'hit_count': 0,
+            'misses': [],
             'total_energy': 0
         }
         self.next = None
@@ -26,7 +25,7 @@ class Memory:
         return consumed, self.access_time
 
     def hit(self) -> float:
-        self.stats['hit_count'] += 1
+        self.stats['misses'].append(0)
         my_consumption = self.calc_if_used()  # First, time to search  myself
         # Then, how much was consumed by subsequent stages during this time
         remaining_idle = self.next.calc_if_unused(self.access_time) if self.next else 0
@@ -34,7 +33,7 @@ class Memory:
         return my_consumption[0] + remaining_idle, self.access_time
 
     def miss(self, address: int) -> float:
-        self.stats['miss_count'] += 1
+        self.stats['misses'].append(1)
         my_dynamic = self.calc_if_used()  # First, time to search myself
         # How much was consumed by subsequent idle stages during this time
         next_idle = self.next.calc_if_unused(self.access_time) if self.next else 0
@@ -46,8 +45,8 @@ class Memory:
         return my_dynamic[0] + future[0] + my_idle + next_idle, my_dynamic[1] + future[1]
 
     def report(self):
-        print(f"{self.__class__.__name__} Misses: {self.stats['miss_count']}")
-        print(f"{self.__class__.__name__} Hits: {self.stats['hit_count']}")
+        print(f"{self.__class__.__name__} Misses: {sum(self.stats['misses'])}")
+        print(f"{self.__class__.__name__} Hits: {sum(1 - i for i in self.stats['misses'])}")
         print(f"{self.__class__.__name__} Energy: {self.stats['total_energy']}")
         if self.next:
             self.next.report()
@@ -105,7 +104,7 @@ class L2Cache(Memory):
     def find_element(self, address: int):
         set_index = self.set_index(address)
         for i in range(self.associativity):
-            if self.cache[set_index][i][0] == address:
+            if self.cache[set_index][i][0] == address // self.block_size:
                 return self.cache[set_index][i]
         return None
 
@@ -122,8 +121,8 @@ class L2Cache(Memory):
         set_index = self.set_index(address)
         # Address not found in the cache
         for idx, val in enumerate(self.cache[set_index]):
-            if not val:
-                self.cache[set_index][idx][0] = address
+            if not val[0]:
+                self.cache[set_index][idx][0] = address // self.block_size
                 return self.miss(address)
         to_evict = random.randrange(4)
         my_idle = 0
@@ -133,7 +132,7 @@ class L2Cache(Memory):
             result = self.next.access(self.cache[set_index][to_evict][0])
             my_idle = self.calc_if_unused(result[1])
             write_time = result[1]
-        self.cache[set_index][to_evict] = [address, False]
+        self.cache[set_index][to_evict] = [address // self.block_size, False]
         result = self.miss(address)
         return result[0] + my_idle, result[1] + write_time
 
