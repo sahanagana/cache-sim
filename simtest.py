@@ -43,6 +43,13 @@ def l2_test():
     plot_misses(run_test('test.din'), 'l2', title='L2 Cache Test')
 
 
+def l1_write_test():
+    print("Testing L1 Cache (Write)...")
+    cases = [('1', hex((i * 64) % (256 * 64))[2:]) for i in range(2 ** 12)]
+    output_tests(cases, 'test.din')
+    plot_misses(run_test('test.din'), title='L1 Cache Write Test')
+
+
 def dinero_test():
     print("Running on real Dinero trace...")
     plot_misses(run_test("Traces/Spec_Benchmark/008.espresso.din"), 'l2', title='008 Espresso Test')
@@ -50,6 +57,7 @@ def dinero_test():
 
 if __name__ == '__main__':
     l1_test()
-    l2_test()
-    l1_thrash()
-    dinero_test()
+    #l2_test()
+    #l1_thrash()
+    #dinero_test()
+    l1_write_test()

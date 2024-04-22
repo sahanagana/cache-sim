@@ -59,8 +59,9 @@ class L1Cache(Memory):
         self.cache_size = 32 * 1024  # 32KB
         self.block_size = 64  # 64 bytes per block
         self.num_blocks = self.cache_size // self.block_size
-        self.cache_inst = [None] * self.num_blocks
-        self.cache_data = [None] * self.num_blocks
+        # THIS CREATES A LIST OF POINTERS, NOT MODIFY-SAFE
+        self.cache_inst = [[None, False]] * self.num_blocks
+        self.cache_data = [[None, False]] * self.num_blocks
         self.next = L2Cache(associativity)
 
     def access(self, access_type: int, address: int):
@@ -68,12 +69,23 @@ class L1Cache(Memory):
         index = (address // self.block_size) % self.num_blocks
         cache = self.cache_inst if access_type == 2 else self.cache_data
         # Check if the address is present in the appropriate cache
-        if cache[index] == address:
+        if cache[index][0] == address:
             result = self.hit()
         else:  # Address not found
-            cache[index] = address
+            # If there's something we're evicting and the data was modified
+            additional, my_idle = (0, 0), 0
+            if cache[index][0] is not None and cache[index][1]:
+                additional = self.next.write(cache[index][0])  # Send to L2
+                # Add penalty because we had to transfer the data to L2
+                my_idle = self.calc_if_unused(additional[1]) + self.penalty
+            cache[index] = [address, False]
+#            cache[index][0] = address
+#            cache[index][1] = False
             result = self.miss(address)
+            result = (result[0] + my_idle, result[1] + additional[1])
         if access_type == 1:  # Always write to L2 in case we evict here
+            cache[index] = [cache[index][0], True]
+            #cache[index][1] = True  # Set the modified bit
             additional = self.next.write(address)
             my_idle = self.calc_if_unused(additional[1])
             result = (result[0] + my_idle, result[1] + additional[1])

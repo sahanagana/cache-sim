@@ -6,7 +6,7 @@ from mem import L1Cache
 def parse_din(file_path: str) -> list[dict]:
     print("Parsing input file...")
     with open(file_path, 'r') as f:
-        return [(int((d := i.split(' '))[0]), int(d[1], 16)) for i in tqdm(f.readlines())]
+        return [(int((d := i.split(' '))[0]), int(d[1], 16)) for i in f.readlines()]
 
 
 def run_test(tracefile: str):
