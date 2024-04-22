@@ -1,17 +1,46 @@
 import random
+import math
+
+
+class Usage:
+    def __init__(self, energy=0, time=0):
+        self.energy, self.time = energy, time
+
+    def __add__(self, other):
+        if isinstance(other, Usage):
+            self.energy += other.energy
+            self.time += other.time
+            return self
+        return self + other
+
+    def __radd__(self, other):
+        return self.__add__(other)
+
+
+class SetAssociativeCache(list):
+    def __getitem__(self, index):
+        if isinstance(index, tuple):
+            return self[index[0]][index[1]]
+        return super().__getitem__(index)
 
 
 class Memory:
     def __init__(self, access_time, static_power, dynamic_power, penalty):
-        self.access_time = access_time * 10 ** -9
+        self.access_time = access_time * 1e-9
         self.static_power = static_power
         self.dynamic_power = dynamic_power
-        self.penalty = penalty * 10 ** -12
+        self.penalty = penalty * 1e-12
         self.stats = {
             'misses': [],
             'total_energy': 0
         }
         self.next = None
+        self.usage = Usage()
+
+    def tag_to_addr(self, tag: int, index: int):
+        """
+        Abstract method, returns address for given tag
+        """
 
     def calc_if_unused(self, idle_time: float) -> float:
         idle = self.next.calc_if_unused(idle_time) if self.next else 0
@@ -19,30 +48,43 @@ class Memory:
         self.stats['total_energy'] += consumed
         return consumed
 
-    def calc_if_used(self) -> tuple[float, float]:
+    def use(self):
         consumed = self.dynamic_power * self.access_time + self.penalty
         self.stats['total_energy'] += consumed
-        return consumed, self.access_time
+        self.usage += Usage(consumed, self.access_time)
 
-    def hit(self) -> float:
+    def total_usage(self) -> Usage:
+        """
+        Returns the total usage so far (including subsequent idle time), and clears the usage.
+        """
+        self.usage.energy += self.next.calc_if_unused(self.usage.time) if self.next else 0
+        result = self.usage
+        self.usage = Usage()
+        return result
+
+    def hit(self) -> Usage:
         self.stats['misses'].append(0)
-        my_consumption = self.calc_if_used()  # First, time to search  myself
-        # Then, how much was consumed by subsequent stages during this time
-        remaining_idle = self.next.calc_if_unused(self.access_time) if self.next else 0
-        # Return total_energy, total_time
-        return my_consumption[0] + remaining_idle, self.access_time
+        return self.total_usage()
 
-    def miss(self, address: int) -> float:
-        self.stats['misses'].append(1)
-        my_dynamic = self.calc_if_used()  # First, time to search myself
-        # How much was consumed by subsequent idle stages during this time
-        next_idle = self.next.calc_if_unused(self.access_time) if self.next else 0
+    def miss(self, access_type: int, address: int) -> Usage:
+        self.stats['misses'].append(1)  # All this is for the read
+        my_consumption = self.total_usage()
         # Then, attempt access on next stage
-        future = self.next.access(address)
+        future = self.next.access(access_type, address)
         # Based on how long it takes, consider that I've been idle for this long
-        my_idle = self.calc_if_unused(future[1])
-        # Return total_energy, total_time
-        return my_dynamic[0] + future[0] + my_idle + next_idle, my_dynamic[1] + future[1]
+        my_consumption.energy += self.calc_if_unused(future.time)
+        if access_type == 1:  # If we're writing
+            self.use()
+            my_consumption += self.total_usage()
+        return my_consumption + future
+
+    def handle_eviction(self, cache, index):
+        if cache[index][0] is None or not cache[index][1]:
+            return Usage()
+        result = self.next.access(1, self.tag_to_addr(cache[index][0], index))  # Write to L2
+        # Add our idle + penalty because we had to transfer the data to L2
+        result.energy += self.calc_if_unused(result.time) + self.penalty
+        return result
 
     def report(self):
         print(f"{self.__class__.__name__} Misses: {sum(self.stats['misses'])}")
@@ -64,31 +106,25 @@ class L1Cache(Memory):
         self.cache_data = [[None, False]] * self.num_blocks
         self.next = L2Cache(associativity)
 
+    def tag_to_addr(self, tag: int, index: int):
+        return (tag << (6 + int(math.log2(self.num_blocks)))) | (index << 6)
+
+    def parse_addr(self, address: int):
+        return (address >> 6) & (self.num_blocks - 1), \
+            address >> (6 + int(math.log2(self.num_blocks)))
+
     def access(self, access_type: int, address: int):
         # Determine the cache index based on the address
-        index = (address // self.block_size) % self.num_blocks
+        index, tag = self.parse_addr(address)
         cache = self.cache_inst if access_type == 2 else self.cache_data
+        self.use()  # Read operation
         # Check if the address is present in the appropriate cache
-        if cache[index][0] == address:
+        if cache[index][0] == tag:
             result = self.hit()
         else:  # Address not found
-            # If there's something we're evicting and the data was modified
-            additional, my_idle = (0, 0), 0
-            if cache[index][0] is not None and cache[index][1]:
-                additional = self.next.write(cache[index][0])  # Send to L2
-                # Add penalty because we had to transfer the data to L2
-                my_idle = self.calc_if_unused(additional[1]) + self.penalty
-            cache[index] = [address, False]
-#            cache[index][0] = address
-#            cache[index][1] = False
-            result = self.miss(address)
-            result = (result[0] + my_idle, result[1] + additional[1])
-        if access_type == 1:  # Always write to L2 in case we evict here
-            cache[index] = [cache[index][0], True]
-            #cache[index][1] = True  # Set the modified bit
-            additional = self.next.write(address)
-            my_idle = self.calc_if_unused(additional[1])
-            result = (result[0] + my_idle, result[1] + additional[1])
+            result = self.handle_eviction(cache, index)
+            cache[index] = [tag, access_type == 1]  # MUST set like this because of pointer list
+            result += self.miss(access_type, address)
         return result
 
     def report(self):
@@ -101,59 +137,56 @@ class L1Cache(Memory):
 
 class L2Cache(Memory):
     def __init__(self, associativity: int):
-        super().__init__(5, .8, 2, 5)
+        super().__init__(4.5, .8, 2, 5)
         self.cache_size = 256 * 1024  # 256KB
         self.block_size = 64  # 64 bytes per block
         self.associativity = associativity
         self.num_sets = self.cache_size // (self.block_size * self.associativity)
-        self.cache = [[[None, False] for _ in range(self.associativity)] for _ in
-                      range(self.num_sets)]
+        self.cache = SetAssociativeCache([[[None, False] for _ in range(self.associativity)]
+                                          for _ in range(self.num_sets)])
+        self.cache: SetAssociativeCache  # Type hint suppresses linting "errors"
         self.next = DRAM()
 
-    def set_index(self, address: int):
-        return (address // self.block_size) % self.num_sets
+    def parse_addr(self, address: int):
+        return (address >> 6) & (self.num_sets - 1), \
+            (address >> (6 + int(math.log2(self.num_sets))))
+
+    def tag_to_addr(self, tag: int, index: tuple[int, int]):
+        return (tag << (6 + int(math.log2(self.num_sets)))) | (index[0] << 6)
 
     def find_element(self, address: int):
-        set_index = self.set_index(address)
+        set_index, tag = self.parse_addr(address)
         for i in range(self.associativity):
-            if self.cache[set_index][i][0] == address // self.block_size:
+            self.use()
+            if self.cache[set_index][i][0] == tag:
                 return self.cache[set_index][i]
         return None
 
-    def write(self, address: int):
-        result = self.access(address)  # Every write requires an L2 access
-        self.find_element(address)[1] = True
-        return result
-
-    def access(self, address: int):
+    def access(self, access_type: int, address: int):
         # Check if the address is present in the cache
         if self.find_element(address):
             return self.hit()
 
-        set_index = self.set_index(address)
+        set_index, tag = self.parse_addr(address)
         # Address not found in the cache
         for idx, val in enumerate(self.cache[set_index]):
+            self.use()
             if not val[0]:
-                self.cache[set_index][idx][0] = address // self.block_size
-                return self.miss(address)
-        to_evict = random.randrange(4)
-        my_idle = 0
-        write_time = 0
-        if self.cache[set_index][to_evict][1]:  # If it's modified
-            # Assume same consumption for read as write
-            result = self.next.access(self.cache[set_index][to_evict][0])
-            my_idle = self.calc_if_unused(result[1])
-            write_time = result[1]
-        self.cache[set_index][to_evict] = [address // self.block_size, False]
-        result = self.miss(address)
-        return result[0] + my_idle, result[1] + write_time
+                self.cache[(set_index, idx)][0] = tag
+                return self.miss(access_type, address)
+        to_evict = random.randrange(self.associativity)
+        self.use()  # Access this random index
+        result = self.handle_eviction(self.cache, (set_index, to_evict))
+        self.cache[set_index][to_evict] = [tag, access_type == 1]
+        result += self.miss(access_type, address)
+        return result
 
 
 class DRAM(Memory):
     def __init__(self):
-        super().__init__(50, .8, 4, 640)
+        super().__init__(45, .8, 4, 640)
 
-    def access(self, address: int):
+    def access(self, access_type: int, address: int):
         # pylint: disable=unused-argument
         return self.hit()  # Don't worry about managing memory, always assume a hit
 

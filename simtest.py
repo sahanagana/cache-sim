@@ -1,3 +1,4 @@
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 from main import run_test
@@ -50,14 +51,22 @@ def l1_write_test():
     plot_misses(run_test('test.din'), title='L1 Cache Write Test')
 
 
-def dinero_test():
-    print("Running on real Dinero trace...")
-    plot_misses(run_test("Traces/Spec_Benchmark/008.espresso.din"), 'l2', title='008 Espresso Test')
+def dinero_test(name: str, associativity=4):
+    print(f"Running on Dinero: {name} with associativity {associativity}")
+    plot_misses(run_test(f"Traces/Spec_Benchmark/{name}", associativity=associativity), title=name)
+
+
+def all_dinero(associativity=4):
+    for i in os.listdir("Traces/Spec_Benchmark"):
+        dinero_test(i, associativity=associativity)
+        print('-' * 100)
 
 
 if __name__ == '__main__':
-    l1_test()
-    #l2_test()
-    #l1_thrash()
-    #dinero_test()
-    l1_write_test()
+#    l1_test()
+#    l2_test()
+#    l1_thrash()
+#    l1_write_test()
+#    all_dinero(2)
+    all_dinero(4)
+#    all_dinero(8)
