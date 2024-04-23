@@ -1,6 +1,7 @@
 #!/bin/bash
 
 required_version="3.10"
+num_trials="$1"
 
 # Function to check if a command is available
 command_exists() {
@@ -29,5 +30,5 @@ python3 -m pip install --user matplotlib numpy tqdm
 
 # Create Python virtual environment and run simtest for all traces
 python3 -m venv venv
-python3 simtest.py
+python3 simtest.py $num_trials
 

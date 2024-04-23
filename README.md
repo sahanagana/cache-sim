@@ -1,20 +1,16 @@
-`./dineroIV -l1-isize 256K -l1-dsize 256K -l1-irepl r -l1-drepl r -l2-usize 2048K -l2-uassoc 4 -l2-urepl r -l1-ibsize 64 -l1-dbsize 64 -l2-ubsize 64  -informat d < "../Traces/Spec_Benchmark/$filename" > "$outputname"`
+# Energy-Performance Tradeoffs of Memory Sytems Project
 
-l1-isize: size of L1 instruction cache (in kibibits)
-l1-dsize: size of L1 data cache (kibibits)
-l1-irepl: replacement algorithm for instruction cache
-l1-drepl: replacement algorithm for data cache
-(l1-iassoc): L1 instruction cache associativity (leaving as default)
-(l1-dassoc): L1 data cache associativity (leaving as default)
-l1-ibsize: instruction cache block size (bytes)
-l1-dbsize: instruction cache block size (bytes)
+This file contains instructions on how to run our code, as well as a general file overview.
 
-l2-usize: size of L2 unified cache (kibibits)
-l2-uassoc: L2 unified cache associativity
-l2-urepl: unified replacement algorithm (set to random)
-l2-ubsize: unified cache block size (bytes)
+`run.sh` - Main run file. Checks if your python verion is correct (3.10), sets up virtual environment, and installs all needed dependencies, then runs the simulator on all the trace files, outputting data points such as energy consumption and time for the different components. Run with `bash run.sh`
 
-informat: dniero format
+`Traces` - Directory containing traces in dinero format. Our simulator uses these traces to run.
 
-Arg 1: input file
-Arg 2: output file
+`mem.py` - Python file that contains L1, L2, and DRAM classes along with methods to simulate accesses, hits, misses, etc.
+
+`main.py` - Python file that contains methods for parsing in dinero traces and setting specifications such as associativity.
+
+`simtest.py` - Python driver code that runs the simulator on all of the traces in the `Traces` directory and prints results.
+
+`report.md` - Report containing our design choices, tables for data points of each component and each trace file, and our conclusion on the effect of L2 cache associativity on energy consumption.
+
