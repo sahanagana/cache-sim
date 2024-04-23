@@ -6,9 +6,8 @@ class Usage:
     """
     Abstractly represents consumption of system resources (energy and time)
     """
-    def __init__(self, energy=0, time=0):
-        self.energy, self.time = energy, time
-        self.idle_time = 0
+    def __init__(self, energy=0, time=0, idle_time=0):
+        self.energy, self.time, self.idle_time = energy, time, idle_time
 
     def __add__(self, other):
         """
@@ -53,7 +52,8 @@ class Memory:
         self.penalty = penalty * 1e-12
         self.stats = {
             'misses': [],
-            'total_energy': 0
+            'total_energy': [],
+            'total_time': []
         }
         self.next = None
         self.next: Memory
@@ -70,6 +70,14 @@ class Memory:
         from_previous: whether the data is being received from previous level in hierarchy.
         """
 
+    def update_stats(self, usage: Usage):
+        """
+        Update the stats based on the total usage after the access is complete. Must be called at
+        the end of access().
+        """
+        self.stats['total_energy'].append(usage.energy)
+        self.stats['total_time'].append(usage.time - usage.idle_time)
+
     def calc_if_unused(self, idle_time: float, next_idle=True) -> float:
         """
         If we're idle for idle_time, return how much energy was consumed
@@ -77,7 +85,6 @@ class Memory:
         # Everything below us was also idle, so add that result
         idle = self.next.calc_if_unused(idle_time, next_idle) if self.next and next_idle else 0
         consumed = self.static_power * idle_time + idle
-        self.stats['total_energy'] += consumed
         return consumed
 
     def use(self):
@@ -85,7 +92,6 @@ class Memory:
         Dynamic use of this device. Log to current usage.
         """
         consumed = self.dynamic_power * self.access_time
-        self.stats['total_energy'] += consumed
         self.usage += Usage(consumed, self.access_time)
 
     def total_usage(self) -> Usage:
@@ -141,30 +147,63 @@ class Memory:
         result.energy += self.calc_if_unused(result.time, next_idle=False)
         return result
 
-    def report(self):
+    def report(self, stat: str, do_next=True):
         """
-        Print # misses, # hits, energy consumed for each level
+        Return appropriate stat for this and all lower levels.
         """
-        print(f"{self.__class__.__name__} Misses: {sum(self.stats['misses'])}")
-        print(f"{self.__class__.__name__} Hits: {sum(1 - i for i in self.stats['misses'])}")
-        print(f"{self.__class__.__name__} Energy: {self.stats['total_energy']}")
-        if self.next:
-            self.next.report()
+        if stat == 'Misses':
+            my = self.stats['misses']
+        elif stat == 'Accesses':
+            my = [1 for _ in range(len(self.stats['misses']))]
+        elif stat == 'Energy':
+            my = self.stats['total_energy']
+        elif stat == 'Time':
+            my = self.stats['total_time']
+        return [my, *(self.next.report(stat) if self.next and do_next else [])]
 
 
-class L1Cache(Memory):
+class MemorySystem:
     """
     Main memory system imported and used outside of this file. Top level of hierarchy.
     """
     def __init__(self, associativity=4):
+        self.next = L2Cache(associativity)  # Pass through associativity argument
+        self.icache = L1Cache(self.next)
+        self.dcache = L1Cache(self.next)
+
+    def access(self, access_type: int, address: int):
+        """
+        Access an address. Calls icache or dcache depending on access_type.
+        """
+        if access_type == 2:
+            result = self.icache.access(access_type, address)
+            dcache_idle = self.dcache.calc_if_unused(result.time, next_idle=False)
+            self.dcache.update_stats(Usage(energy=dcache_idle, time=result.time,
+                                           idle_time=result.time))
+        else:
+            result = self.dcache.access(access_type, address)
+            icache_idle = self.icache.calc_if_unused(result.time, next_idle=False)
+            self.icache.update_stats(Usage(energy=icache_idle, time=result.time,
+                                           idle_time=result.time))
+
+    def report(self, stat: str):
+        """
+        Different report including icache and dcache.
+        """
+        l1 = self.icache.report(stat)
+        l1.insert(1, self.dcache.report(stat, do_next=False)[0])  # order: icache, dcache, l2, dram
+        return l1
+
+
+class L1Cache(Memory):
+    def __init__(self, next_mem: Memory):
         super().__init__(.05, .5, 1, 0)  # Set the hardware parameters
         self.cache_size = 32 * 1024  # 32KB
         self.block_size = 64  # 64 bytes per block
         self.num_blocks = self.cache_size // self.block_size
         # THIS CREATES A LIST OF POINTERS, NOT MODIFY-SAFE
-        self.cache_inst = [[None, False]] * self.num_blocks
-        self.cache_data = [[None, False]] * self.num_blocks
-        self.next = L2Cache(associativity)  # Pass through associativity argument
+        self.cache = [[None, False]] * self.num_blocks
+        self.next = next_mem
 
     def parse_addr(self, address: int) -> tuple[int, int]:
         """
@@ -185,28 +224,18 @@ class L1Cache(Memory):
         """
         # Determine the cache index based on the address
         index, tag = self.parse_addr(address)
-        cache = self.cache_inst if access_type == 2 else self.cache_data
         self.use()  # Read operation
         # Check if the address is present in the appropriate cache
-        if cache[index][0] == tag:
+        if self.cache[index][0] == tag:
             result = self.hit()  # Defined in superclass
             # Set the modified bit (but don't write through, we're doing write back)
-            cache[index] = [tag, True if access_type == 1 else cache[index][1]]
+            self.cache[index] = [tag, True if access_type == 1 else self.cache[index][1]]
         else:  # Address not found
-            result = self.handle_eviction(cache, index)  # Returns Usage after eviction (if needed)
-            cache[index] = [tag, access_type == 1]  # MUST set like this because of pointer list
+            result = self.handle_eviction(self.cache, index)  # Returns Usage after eviction
+            self.cache[index] = [tag, access_type == 1]  # MUST set like this
             result += self.miss(access_type, address, from_previous=from_previous)
+        self.update_stats(result)
         return result
-
-    def report(self):
-        """
-        Additionally print the total energy for the whole system.
-        """
-        super().report()
-        l1_energy = self.stats['total_energy']
-        l2_energy = self.next.stats['total_energy']
-        dram_energy = self.next.next.stats['total_energy']
-        print(f"Total energy consumed: {l1_energy + l2_energy + dram_energy}")
 
 
 class L2Cache(Memory):
@@ -256,7 +285,9 @@ class L2Cache(Memory):
         if elem := self.find_element(address):
             if access_type == 1:
                 self.cache[elem[0]][elem[1]][1] = True
-            return self.hit()
+            result = self.hit()
+            self.update_stats(result)
+            return result
 
         set_index, tag = self.parse_addr(address)
         # Address not found in the cache
@@ -264,13 +295,16 @@ class L2Cache(Memory):
             self.use()
             if val[0] is None:  # No eviction needed
                 self.cache[set_index][idx] = [tag, access_type == 1]
-                return self.miss(access_type, address, from_previous=from_previous)
+                result = self.miss(access_type, address, from_previous=from_previous)
+                self.update_stats(result)
+                return result
         # Now we're evicting
         to_evict = random.randrange(self.associativity)  # Random eviction policy
         self.use()  # Access this random index
         result = self.handle_eviction(self.cache, (set_index, to_evict))
         self.cache[set_index][to_evict] = [tag, access_type == 1]
         result += self.miss(access_type, address, from_previous=from_previous)
+        self.update_stats(result)
         return result
 
 
@@ -286,10 +320,7 @@ class DRAM(Memory):
         Very simple access method: always a hit.
         """
         # pylint: disable=unused-argument
-        return self.hit()  # Don't worry about managing memory, always assume a hit
-
-    def report(self):
-        """
-        Don't report hit/miss statistics since they're meaningless.
-        """
-        print(f"DRAM total energy: {self.stats['total_energy']}")
+        self.use()
+        result = self.hit()  # Don't worry about managing memory, always assume a hit
+        self.update_stats(result)
+        return result

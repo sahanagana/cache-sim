@@ -1,72 +1,76 @@
 import os
-import matplotlib.pyplot as plt
-import numpy as np
+import argparse
+from functools import reduce
+from tqdm import tqdm
+import pandas as pd
 from main import run_test
 
 
-def output_tests(cases, outfile):
-    with open(outfile, 'w') as f:
-        cases = [' '.join(i) for i in cases]
-        f.write('\n'.join(cases))
+class Tester:
+    def __init__(self, name: str, trials: int):
+        self.name, self.trials = name, trials
+        self.levels = ['L1 ICache', 'L1 DCache', 'L2 Cache', 'DRAM']
+        self.stats = ['Accesses', 'Misses', 'Energy', 'Time']
 
-def plot_misses(memory_system, level='l1', title=''):
-    if level == 'l2':
-        memory_system = memory_system.next
-    elif level == 'dram':
-        memory_system = memory_system.next.next
-    y = np.cumsum(memory_system.stats['misses'])
-    plt.plot(y)
-    plt.xlabel('Instruction #')
-    plt.ylabel(f"{level.capitalize()} Cumulative Miss Count")
-    plt.title(title)
-    plt.savefig(f'{title or "out"}.png')
-    plt.close('all')
+    def run_test(self, associativity=4):
+        results = run_test(self.name, associativity, False)
+        return reduce(lambda a, b: a | b, [self._get_stat(results, i) for i in self.stats], {})
 
+    def run_trials(self, associativity=4):
+        result = pd.DataFrame([self.run_test(associativity) for _ in tqdm(range(self.trials))])
+        for i in ['Energy', 'Time']:
+            result[f'Total {i}'] = result[[f"{j} {i}" for j in self.levels]].sum(axis=1)
+        return result
 
-def l1_test():
-    print("Testing L1 Cache...")
-    cases = [('0', hex((i * 64) % (256 * 64))[2:]) for i in range(2 ** 12)]
-    output_tests(cases, 'test.din')
-    plot_misses(run_test('test.din'), title='L1 Cache Test')
+    def test_associativities(self, to_try=None):
+        to_try = to_try if to_try is not None else [2, 4, 8]
+        print(f"Trying associativities: {', '.join(str(i) for i in to_try)} with {self.trials} \
+              trials each.")
+        return [(i, self.run_trials(associativity=i)) for i in to_try]
 
+    def dump_associativity_test(self, data):
+        buf = f"Testing {self.name} with {self.trials} trials..."
+        for i in data:
+            summary = pd.DataFrame({
+                'Mean': i[1].mean(),
+                'Standard Deviation': i[1].std(),
+            }).T
+            buf = f"{buf}\n\nAssociativity {i[0]}:\n{i[1].to_string()}\nSummary:\n" + \
+                f"{summary.to_string()}"
+        return buf
 
-def l1_thrash():
-    print("Testing L1 Cache (Thrashing)...")
-    cases = [('0', hex((i * 64) % (256 * 64 + 1))[2:]) for i in range(2 ** 14)]
-    output_tests(cases, 'test.din')
-    plot_misses(run_test('test.din'), 'l2', title='L1_L2 Thrashing Cache Test')
+    @staticmethod
+    def _merge_fn(a, b):
+        return a | b
 
-
-def l2_test():
-    print("Testing L2 Cache...")
-    cases = [('0', hex((i * 64) % (128 * 1024))[2:]) for i in range(2 ** 14)]
-    output_tests(cases, 'test.din')
-    plot_misses(run_test('test.din'), 'l2', title='L2 Cache Test')
-
-
-def l1_write_test():
-    print("Testing L1 Cache (Write)...")
-    cases = [('1', hex((i * 64) % (256 * 64))[2:]) for i in range(2 ** 12)]
-    output_tests(cases, 'test.din')
-    plot_misses(run_test('test.din'), title='L1 Cache Write Test')
+    def _get_stat(self, results: list, stat: str) -> dict:
+        res = results.report(stat)
+        return {f"{self.levels[j]} {stat}": sum(res[j]) for j in range(len(self.levels))}
 
 
-def dinero_test(name: str, associativity=4):
-    print(f"Running on Dinero: {name} with associativity {associativity}")
-    plot_misses(run_test(f"Traces/Spec_Benchmark/{name}", associativity=associativity), title=name)
+def dinero_test(name: str, trials: int, outfile=None, to_try=None):
+    t = Tester(name, trials)
+    results = t.test_associativities(to_try=to_try)
+    results_str = t.dump_associativity_test(results)
+    print(results_str)
+    if outfile:
+        with open(outfile, 'w') as f:
+            f.write(results_str)
+    return results_str
 
 
-def all_dinero(associativity=4):
+def all_dinero(trials: int, outfile=None, to_try=None):
+    buf = ''
     for i in os.listdir("Traces/Spec_Benchmark"):
-        dinero_test(i, associativity=associativity)
-        print('-' * 100)
+        buf += dinero_test(os.path.join("Traces/Spec_Benchmark", i), trials, to_try=to_try)
+        print('-' * 80)
+        buf += '-' * 80
+    if outfile:
+        with open(outfile, 'w') as f:
+            f.write(buf)
+    return buf
 
 
 if __name__ == '__main__':
-#    l1_test()
-#    l2_test()
-#    l1_thrash()
-#    l1_write_test()
-#    all_dinero(2)
-    all_dinero(4)
-#    all_dinero(8)
+    #dinero_test('Traces/Spec_Benchmark/008.espresso.din', 3, 'py_out.txt')
+    all_dinero(8)
